@@ -1,0 +1,99 @@
+#!/bin/bash
+#
+# Script para baixar a última versão e transformar os RPMs do TSM em .deb
+# E depois proceder as alterações necessárias para a conclusão da instalação.
+# O script pegará sempre a versão mais atual do release v5r5.
+# Desenvolvido por Alfredo Tristão Casanova
+# alfredo.casanova@serpro.gov.br
+# atcasanova at gmail dot com
+#
+
+# verifica privilégios de root
+[ $(id -u) -eq 0 ] || { echo "E necessario ter privilegio de root para
+executar esse script." && exit 1; }
+
+# função para criação do arquivo control da API e do backup agent
+
+control(){
+        modo=$1
+        path="TIVsm-${modo^^}-$version/DEBIAN/control"
+        echo "Source: tivsm-$modo
+Section: non-free
+Priority: extra
+Maintainer: root <root@localhost>
+Package: tivsm-$modo
+Architecture: all
+Depends:
+Description: the ${modo^^} IBM Tivoli Storage Manager
+Version: $version
+"  > $path
+}
+
+# verifica arquitetura do SO
+[ $(getconf LONG_BIT) = "64" ] && arch=IA64 || arch=X86
+echo "Arquitetura do sistema: $arch"
+
+# pesquisa do build mais recente da versão v5r5 do client
+# e monta URL para download do pacote
+echo "Buscando versão mais recente do Client Release v5r5"
+curl=$(which curl)
+
+# lista de mirrors
+mirror1=ftp.software.ibm.com/storage/tivoli-storage-management/maintenance/client/v5r5/Linux/Linux$arch/
+mirror2=ftp.wu-wien.ac.at/mirrors/tsm/maintenance/client/v5r5/Linux/Linux$arch/
+
+# sorteio randomico de mirror
+rand=$RANDOM
+RANGE=2
+let "rand %= $RANGE"
+
+case $rand in
+        0) url=$mirror1 ;;
+        1) url=$mirror2 ;;
+esac
+
+echo Mirror $url selecionado
+
+latestversion=$($curl -s $url | grep -oE "v[0-9]{3}" | tail -1)
+version=${latestversion:1:1}.${latestversion:2:1}.${latestversion:3:1}
+filename=$version.0-TIV-TSMBAC-Linux$arch.tar
+echo -e "\n\nVersão mais recente encontrada: $version\nBaixando $filename\n\n\n"
+ 
+# download da versão mais recente
+wget -c $url/$latestversion/$filename
+
+# verifica se o arquivo existe
+if [ -s $filename ]
+then
+        tar xvf $filename
+else
+        echo "Arquivo $filename invalido"
+        exit 1
+fi
+
+# verificação de ferramentas necessárias
+echo Verificando ferramentas necessárias
+[ $(dpkg -s alien 2&> /dev/null) ] || apt-get install alien gawk libstdc++5
+
+# conversão dos RPMs em .deb
+[ "$arch" = "X86" ] && ext=i386.rpm || ext=ia64.rpm
+alien -g TIVsm-API.$ext
+alien -g TIVsm-BA.$ext
+
+mv TIVsm-API-$version/debian TIVsm-API-$version/DEBIAN
+mv TIVsm-BA-$version/debian TIVsm-BA-$version/DEBIAN
+chmod 0775 TIVsm*/DEBIAN/postinst
+
+control api
+control ba
+
+dpkg -b TIVsm-API-$version
+dpkg -b TIVsm-BA-$version
+dpkg -i TIVsm-API-$version.deb
+dpkg -i TIVsm-BA-$version.deb
+
+echo "/opt/tivoli/tsm/client/ba/bin" >> /etc/ld.so.conf
+ldconfig
+ln -s /opt/tivoli/tsm/client/lang/en_US /opt/tivoli/tsm/client/ba/bin/
+
+echo "A instalação do agente está concluída. Proceda com a configuração do agente em /opt/tivoli/tsm/client/ba/bin"
